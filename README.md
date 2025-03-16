@@ -34,11 +34,11 @@ https://github.com/user-attachments/assets/4f08bb9f-8356-4737-b00b-1a2dd1d34910
 ### Download MGMono Model Weights
 320 × 1024
 The files shared via Baidu Netdisk: encoder.pth and depth.pth
-Download link: ([https://github.com](https://pan.baidu.com/s/1bZVLKNh6VKu5vUl38BWcnA?pwd=49nk)) key: 49nk 
+Download link: ([https://pan.baidu.com/s/1bZVLKNh6VKu5vUl38BWcnA?pwd=49nk]) key: 49nk 
 
 192 × 640
 The files shared via Baidu Netdisk: encoder.pth and depth.pth
-Download link: ([https://github.com](https://pan.baidu.com/s/12vWnzY9j6D2VzDO0NlBhzA?pwd=sivq)) key: sivq 
+Download link: ([https://pan.baidu.com/s/12vWnzY9j6D2VzDO0NlBhzA?pwd=sivq]) key: sivq 
 ## Test
   python test_simple.py --load_weights_folder path/to/your/weights/folder --image_path path/to/your/test/image
 ## Evaluation
@@ -51,7 +51,7 @@ Download link: ([https://github.com](https://pan.baidu.com/s/12vWnzY9j6D2VzDO0Nl
 Download link: Stay tuned for more updates!
 
 192 × 640
-Download link: [GitHub]([https://github.com](https://pan.baidu.com/s/1ZzfYVaQt5Kl_0kb4DcXxrg?pwd=kd2j)) key: kd2j 
+Download link:([https://pan.baidu.com/s/1ZzfYVaQt5Kl_0kb4DcXxrg?pwd=kd2j]) key: kd2j 
 ### start training
     python train.py --data_path path/to/your/data --model_name mytrain --num_epochs 30 --batch_size 12 --mypretrain path/to/your/pretrained/weights  --lr 0.0001 5e-6 31 0.0001 1e-5 31
     
