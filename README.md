@@ -1,5 +1,23 @@
 
 # MG-Mono: A Lightweight Multi-Granularity Method for Self-Supervised Monocular Depth Estimation
+
+## Table of Contents
+- [Overview](#overview)
+- [Video Result](#video-result)
+- [KITTI Results](#kitti-results)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Install Dependencies](#install-dependencies)
+  - [Download MGMono Model Weights](#download-mgmono-model-weights)
+- [Test](#test)
+- [Evaluation](#evaluation)
+- [Training](#training)
+  - [Dependency Installation](#dependency-installation)
+  - [Preparing Pre-trained Weights](#preparing-pre-trained-weights)
+  - [Start Training](#start-training)
+
+
+
 ## Video result
 
 
