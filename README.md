@@ -40,10 +40,6 @@ https://github.com/user-attachments/assets/4f08bb9f-8356-4737-b00b-1a2dd1d34910
 
 ## Quick Start
 
-### Prerequisites
-
-  conda create -n mg_mono python=3.8
-  conda activate mg_mono
 
 ### Install Dependencies
   pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 --extra-index-url https://download.pytorch.org/whl/cu113
