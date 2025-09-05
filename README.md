@@ -47,6 +47,7 @@ https://github.com/user-attachments/assets/4f08bb9f-8356-4737-b00b-1a2dd1d34910
 ### Download MGMono Model Weights
 
 320 × 1024
+
 Download link: Stay tuned for more updates!
 
 192 × 640   
