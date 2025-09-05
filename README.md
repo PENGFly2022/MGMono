@@ -54,7 +54,8 @@ Download link: Stay tuned for more updates!
 The files shared via Baidu Netdisk: encoder.pth and depth.pth
 Download link: https://pan.baidu.com/s/14yiPeOKeerqIQITDTVxGCw?pwd=yqsa key: yqsa 
 
-Note that this weight is obtained using the HR semantic segmentation model as pre-trained and does not use the NWC prediction header, so stay tuned for the rest of the weights.
+Note that this weight is obtained using the HR semantic segmentation model as pre-trained and does not use the NWC prediction header. Note that this weight is obtained using a pre-trained HR semantic segmentation model without using NWC prediction headers.
+Other weights will be updated.
 ## Test
   python test_simple.py --load_weights_folder path/to/your/weights/folder --image_path path/to/your/test/image
 ## Evaluation
