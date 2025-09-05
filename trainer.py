@@ -1,4 +1,5 @@
 
+# 下面是hr指导的代码（mse/余弦/注意力权重/损失）############################################################################################
 from __future__ import absolute_import, division, print_function
 
 
@@ -10,9 +11,6 @@ from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
 import json
-
-from torchvision import transforms
-
 from utils import *
 from kitti_utils import *
 from layers import *
@@ -22,10 +20,6 @@ import networks
 from linear_warmup_cosine_annealing_warm_restarts_weight_decay import ChainedScheduler
 
 import hrseg
-import sys
-sys.path.append('/home/nenu/a25/lsh/seg-mono/hr-mono/segment-anything-2-main')  # 添加根目录路径
-from hrseg.hrseg_model import create_hrnet
-from sam2.modeling.c_modell import create_segment_anything_model
 from hrseg.hrseg_model import create_hrnet
 
 def time_sync():
@@ -62,9 +56,6 @@ class Trainer:
     def __init__(self, options):
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
-        self.conv = nn.Conv2d(in_channels=96, out_channels=48, kernel_size=1)
-        self.conv1 = nn.Conv2d(in_channels=192, out_channels=96, kernel_size=1)
-        self.conv2 = nn.Conv2d(in_channels=384, out_channels=192, kernel_size=1)
 
         # checking height and width are multiples of 32
         assert self.opt.height % 32 == 0, "'height' must be a multiple of 32"
@@ -77,7 +68,11 @@ class Trainer:
         self.parameters_to_train_pose = []
 
         self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
-
+        # self.SelfAttention = SelfAttention(in_channels=48).to(self.device)
+        #通道注意力
+        # self.SelfAttention = SelfAttention(in_channels=48, options=self.opt).to(self.device)
+        #空间注意力
+        # self.spatialAttention = SpatialAttention().to(self.device)
 
         self.profile = self.opt.profile
 
@@ -99,15 +94,10 @@ class Trainer:
         self.parameters_to_train += list(self.models["encoder"].parameters())
 
 
-        self.models["seg"] = create_segment_anything_model().cuda()
+        self.models["seg"] = create_hrnet().cuda()
 
-        # self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc,
-        #                                              self.opt.scales)
-        self.models["depth"] = networks.DepthDecoder(
-            num_output_channels=1,
-            use_skips=True
-        )
-
+        self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc,
+                                                     self.opt.scales)
         self.models["depth"].to(self.device)
         self.parameters_to_train += list(self.models["depth"].parameters())
 
@@ -160,7 +150,7 @@ class Trainer:
                             eta_min=self.opt.lr[1],
                             last_epoch=-1,
                             max_lr=self.opt.lr[0],
-                            warmup_steps=5,
+                            warmup_steps=0,
                             gamma=0.9
                         )
         self.model_pose_lr_scheduler = ChainedScheduler(
@@ -241,7 +231,7 @@ class Trainer:
 
         self.save_opts()
 
-    def set_train(self):
+    def set_train(self): # 将所有模型转换为训练模式
         """Convert all models to training mode
         """
         for m in self.models.values():
@@ -256,12 +246,12 @@ class Trainer:
     def train(self):
         """Run the entire training pipeline
         """
-        self.epoch = 0
-        self.step = 0
-        self.start_time = time.time()
+        self.epoch = 0 # 当前训练轮数，默认为0
+        self.step = 0 # 初始化训练步数 默认为0 可能用于跟踪每个epoch内的迭代次数
+        self.start_time = time.time() # 记录训练开始的时间
         for self.epoch in range(self.opt.num_epochs):
             self.run_epoch()
-            if (self.epoch + 1) % self.opt.save_frequency == 0:
+            if (self.epoch + 1) % self.opt.save_frequency == 0: # 判断当前epoch是否满足保存模型的条件
                 self.save_model()
 
     def run_epoch(self):
@@ -275,22 +265,17 @@ class Trainer:
         if self.use_pose_net:
             self.model_pose_lr_scheduler.step()
 
+        for batch_idx, inputs in enumerate(self.train_loader): #迭代数据加载器
 
 
-        for batch_idx, inputs in enumerate(self.train_loader):
-
-
-
-
-
-            before_op_time = time.time()
+            before_op_time = time.time() # 记录批处理之前时间
 
             outputs, losses = self.process_batch(inputs)
 
-            self.model_optimizer.zero_grad()
+            self.model_optimizer.zero_grad() # 清零优化器梯度
             if self.use_pose_net:
                 self.model_pose_optimizer.zero_grad()
-            losses["loss"].backward()
+            losses["loss"].backward() # 对总损失进行反向传播
             self.model_optimizer.step()
             if self.use_pose_net:
                 self.model_pose_optimizer.step()
@@ -298,8 +283,8 @@ class Trainer:
             duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
-            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 20000
-            late_phase = self.step % 2000 == 0
+            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 20000 # 在前20000步中，每250步记录一次
+            late_phase = self.step % 2000 == 0 # 在初始阶段后 每20000步记录一次
 
             if early_phase or late_phase:
                 self.log_time(batch_idx, duration, losses["loss"].cpu().data, losses["loss_cos"].cpu().data,losses["loss_a"].cpu().data)
@@ -311,40 +296,21 @@ class Trainer:
                 self.val()
 
             self.step += 1
-
-    def visualize_segmentation(self,seg_map, num_classes=19):
-        """
-        可视化分割图
-        :param seg_map: 语义分割特征图 (batch_size, num_classes, height, width)
-        :param num_classes: 类别数量
-        """
-        seg_map = torch.argmax(seg_map, dim=1)
+            #显示数据
 
 
-        # 选取第一个样本进行可视化
-        seg_map = seg_map[1].cpu().detach().numpy()
 
-        plt.figure(figsize=(10, 10))
-        plt.imshow(seg_map, cmap='jet')
-        plt.colorbar()
-        plt.title("Semantic Segmentation Map")
-        plt.axis('off')
-        plt.show()
+
 
 
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
         """
-        transform = transforms.Compose([
-            transforms.Resize(512),  # 将短边调整为512
-            transforms.CenterCrop((512, 512)),  # 中心裁剪为512x512
-            transforms.ToTensor()  # 转换为 PyTorch Tensor 格式
-        ])
-
+        # 数据预处理
         for key, ipt in inputs.items():
             inputs[key] = ipt.to(self.device)
-            # print(inputs[key].shape)
 
+        # 特征提取
         if self.opt.pose_model_type == "shared":
             # If we are using a shared encoder for both depth and pose (as advocated
             # in monodepthv1), then all images are fed separately through the depth encoder.
@@ -360,9 +326,38 @@ class Trainer:
         else:
             # Otherwise, we only feed the image with frame_id 0 through the depth encoder
 
-
             features, seg_features_map= self.models["encoder"](inputs["color_aug", 0, 0])
-
+            #——————————————————————————————————————语义特征——————————————————————————————————————
+            seg_map, seg_feature = self.models["seg"](inputs["color_aug", 0, 0])
+            #可视化seg_map
+            # print(seg_map.shape,'特征图形状')
+            # print(features[0].shape,'特征图形状1')
+            # print(features[1].shape,'特征图形状2')
+            # print(features[2].shape,'特征图形状3')
+            # print(features[3].shape,'特征图形状4')
+            #可视化特征图
+            # plt.figure(figsize=(16, 16))
+            # for i in range(1):
+            #     plt.subplot(1, 3, i + 1)
+            #
+            #     plt.imshow(features[0][0, i, :, :].cpu().detach().numpy())
+            #
+            #     # plt.imshow(low_out[0, i, :, :].cpu().numpy())
+            #     plt.axis('off')
+            #     plt.title('input_low')
+            # # plt.show()
+            # plt.figure(figsize=(16, 16))
+            # for i in range(1):
+            #     plt.subplot(1, 3, i + 1)
+            #
+            #     plt.imshow(seg_feature[0][0, i, :, :].cpu().numpy())
+            #
+            #     # plt.imshow(low_out[0, i, :, :].cpu().numpy())
+            #     plt.axis('off')
+            #     plt.title('input_low')
+            # plt.show()
+            # print(features[3].shape,'特征图形状4')
+            # print(features[1].shape,'特征图形状2')
             outputs = self.models["depth"](features) # 将提取的特征送入深度模型，得到估计的深度
         # 额外的分支（可选：predictive_mask & use_pose_net）默认无predictive_mask
         if self.opt.predictive_mask:
@@ -373,14 +368,22 @@ class Trainer:
             outputs.update(self.predict_poses(inputs, features))
         self.generate_images_pred(inputs, outputs)
         losses = self.compute_losses(inputs, outputs)
-
+        # print(losses,"--------lossess------")
+        #
+        # losses_cos = 0
+        # for i in range(1):
+        #     losses_cos += self.cosine_similarity_loss(seg_feature[i], features[i])
+        # losses['loss_cos'] = losses_cos
+        # losses['loss'] += losses_cos
+        # print(losses,"---loss-a--")
 
         return outputs, losses
 
-    def predict_poses(self, inputs, features):
+    def predict_poses(self, inputs, features): # 该函数用于单目序列，预测输入帧之间的姿态
         """Predict poses between input frames for monocular sequences.
         """
         outputs = {}
+        # 预测帧数判断
         if self.num_pose_frames == 2:
             # print("---------------self.num_pose_frames == 2-------------")
             # In this setting, we compute the pose to each source frame via a
@@ -394,7 +397,6 @@ class Trainer:
             else:
                 # print("---------------self.opt.pose_model_type == separate-------------")
                 pose_feats = {f_i: inputs["color_aug", f_i, 0] for f_i in self.opt.frame_ids}
-                # print(pose_feats[0].shape,'pose')
 
             for f_i in self.opt.frame_ids[1:]:
                 if f_i != "s":
@@ -439,7 +441,7 @@ class Trainer:
                     outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
                         axisangle[:, i], translation[:, i])
 
-        return outputs
+        return outputs # 字典
 
     def val(self):
         """Validate the model on a single minibatch
@@ -462,22 +464,23 @@ class Trainer:
 
         self.set_train()
 
-    def generate_images_pred(self, inputs, outputs):
+    def generate_images_pred(self, inputs, outputs): # 生成单个重投影彩色图像.生成图像存在output字典中
         """Generate the warped (reprojected) color images for a minibatch.
         Generated images are saved into the `outputs` dictionary.
         """
-        for scale in self.opt.scales:
-            disp = outputs[("disp", scale)]
-            if self.opt.v1_multiscale:
-                # print("---------------self.opt.v1_multiscale-------------")
-                source_scale = scale
+        for scale in self.opt.scales: # 对每个尺度在opt.scales中进行循环
+            disp = outputs[("disp", scale)] # 从输出中得到视差
+            if self.opt.v1_multiscale: # 若使用多尺度模式为真
+                print("---------------self.opt.v1_multiscale-------------")
+                source_scale = scale # 设置源尺度
             else:
-                disp = F.interpolate(
+                disp = F.interpolate( # 插值视差图disp到原始分辨率
                     disp, [self.opt.height, self.opt.width], mode="bilinear", align_corners=False)
                 source_scale = 0
-            _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
+            # 深度计算
+            _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth) # 将视差转为深度
 
-            outputs[("depth", 0, scale)] = depth
+            outputs[("depth", 0, scale)] = depth # 存储深度图
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
 
@@ -495,17 +498,17 @@ class Trainer:
                     inv_depth = 1 / depth
                     mean_inv_depth = inv_depth.mean(3, True).mean(2, True)
 
-                    T = transformation_from_parameters(
+                    T = transformation_from_parameters( # 调整变换矩阵T使用平均深度倒数
                         axisangle[:, 0], translation[:, 0] * mean_inv_depth[:, 0], frame_id < 0)
 
-                cam_points = self.backproject_depth[source_scale](
+                cam_points = self.backproject_depth[source_scale]( # 反投影深度图得到世界坐标点
                     depth, inputs[("inv_K", source_scale)])
-                pix_coords = self.project_3d[source_scale](
+                pix_coords = self.project_3d[source_scale]( # 投影世界坐标点到像素坐标点,使用内参k和变换矩阵T
                     cam_points, inputs[("K", source_scale)], T)
 
-                outputs[("sample", frame_id, scale)] = pix_coords
+                outputs[("sample", frame_id, scale)] = pix_coords # 在输出中存储像素坐标
 
-                outputs[("color", frame_id, scale)] = F.grid_sample(
+                outputs[("color", frame_id, scale)] = F.grid_sample( # 扭曲输入的彩色图像,使用像素坐标作为采样点,得到重投影彩色图像并存储在输出中
                     inputs[("color", frame_id, source_scale)],
                     outputs[("sample", frame_id, scale)],
                     padding_mode="border", align_corners=True)
@@ -514,11 +517,11 @@ class Trainer:
                     outputs[("color_identity", frame_id, scale)] = \
                         inputs[("color", frame_id, source_scale)]
 
-    def compute_reprojection_loss(self, pred, target):
+    def compute_reprojection_loss(self, pred, target): # 计算预测图像与目标图像之间的重投影误差
         """Computes reprojection loss between a batch of predicted and target images
         """
-        abs_diff = torch.abs(target - pred)
-        l1_loss = abs_diff.mean(1, True)
+        abs_diff = torch.abs(target - pred) # 绝对差值
+        l1_loss = abs_diff.mean(1, True) # 对绝对差值按通道求均值,得到每个像素位置的平均误差
 
         if self.opt.no_ssim:
             reprojection_loss = l1_loss
@@ -527,7 +530,18 @@ class Trainer:
             reprojection_loss = 0.85 * ssim_loss + 0.15 * l1_loss # 结合L1误差和结构相似性损失
 
         return reprojection_loss
-
+#     def compute_weights(self, seg_feature):
+#         B,C,H,W = seg_feature.shape
+#         # sa = self.SelfAttention(seg_feature.to(self.device))  # 根据特征通道数初始化自注意力模块
+#         # sa = SelfAttention(in_channels=C, options=self.opt).to(self.device)  # 根据特征通道数初始化自注意力模块
+#         sa = SpatialAttention(kernel_size=7,options=self.opt).to(self.device)
+#         attention_map = sa(seg_feature.to(self.device))
+#         # weights = torch.mean(attention_map, dim=1, keepdim=True)  # 获取加权平均作为权重
+#         return attention_map  # 确保权重范围在0到1之间
+# #均方误差损失设计
+#     def weighted_loss(self,seg_feature, features):
+#         weights = self.compute_weights(seg_feature)  # 生成权重,
+#         loss = (weights * torch.mean((seg_feature - features) ** 2, dim=1)).mean()  # 加权均方误差损失
 
 
         return loss
@@ -544,8 +558,10 @@ class Trainer:
         返回:
         逐像素的余弦相似度损失张量，形状为 (batch_size, channels, height, width)
         """
+        # 计算input1和input2的点积，形状为 (batch_size, channels, height, width)
         dot_product = torch.sum(input1 * input2, dim=1, keepdim=True)
 
+        # 计算input1和input2的L2范数，形状为 (batch_size, 1, height, width)
         norm_input1 = torch.norm(input1, p=2, dim=1, keepdim=True)
         norm_input2 = torch.norm(input2, p=2, dim=1, keepdim=True)
 
@@ -567,6 +583,12 @@ class Trainer:
         """
         losses = {}
         features, seg_features_map= self.models["encoder"](inputs["color_aug", 0, 0])
+        # print(seg_features_map[0].shape,'seg_features_map')
+        # print("features",features[0].shape)
+
+        # ——————————————————————————————————————语义特征——————————————————————————————————————
+        seg_map, seg_feature = self.models["seg"](inputs["color_aug", 0, 0])
+        # print("seg_feature",seg_feature.shape)
 
 
 
@@ -577,10 +599,29 @@ class Trainer:
             # print("scale",scale)
             loss = 0
             reprojection_losses = []
+            cos_losses = []
+            # weights = self.compute_weights(seg_feature[scale])
+            # print(weights.shape,weights)
+            # print("features", features[scale].shape)
+            # print("seg_feature", seg_feature[scale].shape)
 
-            cos_losses = torch.mean(self.pixelwise_cosine_similarity_loss(seg_features_map[scale], features[scale+1]))
+            # cos_losses.append(self.pixelwise_cosine_similarity_loss(seg_feature[scale], features[scale]))
+            # print('55555555555',torch.mean(self.pixelwise_cosine_similarity_loss(seg_feature[scale], features[scale])))
 
+            # cos_losses = torch.mean(self.pixelwise_cosine_similarity_loss(seg_features_map[scale]*seg_feature[scale], features[scale]))
+            # cos_losses = torch.mean(self.pixelwise_cosine_similarity_loss(seg_features_map[scale], features[scale]))
+            cos_losses = torch.mean(self.pixelwise_cosine_similarity_loss(seg_features_map[scale], features[scale]))
 
+            # print(seg_features_map[scale].shape,'seg',cos_losses)
+            # cos_losses = torch.mean(self.weighted_loss(seg_feature[scale], features[scale]))
+
+            # cos_losses += cos_losses
+
+            # print("cos_losses333", (self.pixelwise_cosine_similarity_loss(seg_feature[scale], features[scale])).shape)
+
+            # print("cos_losses-----------",cos_losses[scale].shape)
+            # print("cos_losses",cos_losses[1].shape)
+            # print("cos_losses",cos_losses[2].shape)
 
             if self.opt.v1_multiscale:
                 # print("------------self.opt.v1_multiscale-----------")
@@ -595,12 +636,15 @@ class Trainer:
             # print("disp",disp.shape)
             target = inputs[("color", 0, source_scale)]
 
+            # print("target",target.shape)
 
             for frame_id in self.opt.frame_ids[1:]:
                 pred = outputs[("color", frame_id, scale)]
                 reprojection_losses.append(self.compute_reprojection_loss(pred, target))
+                # print("reprojection_losses55555555555555",reprojection_losses[frame_id].shape)
 
             reprojection_losses = torch.cat(reprojection_losses, 1)
+            # print("reprojection_losses",reprojection_losses.shape)
 
             if not self.opt.disable_automasking:
                 identity_reprojection_losses = []
@@ -848,7 +892,17 @@ class Trainer:
         model_dict.update(pretrained_dict)
         self.models["encoder"].load_state_dict(model_dict)
         print('mypretrain loaded.')
-
+        # 权重冻结====================================================================
+        # for param in self.models["encoder"].three_extractor[0].parameters():
+        #     param.requires_grad = False
+        # for param in self.models["encoder"].three_extractor[1].parameters():
+        #     param.requires_grad = False
+        # for param in self.models["encoder"].three_extractor[2].parameters():
+        #     param.requires_grad = False
+        # print("Frozen layers:")
+        # for name, param in self.models["encoder"].named_parameters():
+        #     if not param.requires_grad:
+        #         print(name)
 
     def load_model(self):
         """Load model(s) from disk

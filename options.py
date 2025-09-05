@@ -8,7 +8,7 @@ file_dir = os.path.dirname(__file__)  # the directory that options.py resides in
 
 class MGMonoOptions:
     def __init__(self):
-        self.parser = argparse.ArgumentParser(description="MG-Mono options")
+        self.parser = argparse.ArgumentParser(description="MGMono options")
 
         # PATHS
         self.parser.add_argument("--data_path",
@@ -24,7 +24,7 @@ class MGMonoOptions:
         self.parser.add_argument("--model_name",
                                  type=str,
                                  help="the name of the folder to save the model in",
-                                 default="MG-Mono")
+                                 default="MGMono")
         self.parser.add_argument("--split",
                                  type=str,
                                  help="which training split to use",
@@ -33,8 +33,8 @@ class MGMonoOptions:
         self.parser.add_argument("--model",
                                  type=str,
                                  help="which model to load",
-                                 choices=["MG-Mono", "MG-Mono-Tiny"],
-                                 default="MG-Mono")
+                                 choices=["MGMono", "MGMono-tiny"],
+                                 default="MGMono")
         self.parser.add_argument("--weight_decay",
                                  type=float,
                                  help="weight decay in AdamW",
@@ -72,7 +72,7 @@ class MGMonoOptions:
                                  nargs="+",
                                  type=int,
                                  help="scales used in the loss",
-                                 default=[0, 1, 2,])
+                                 default=[0, 1,2])
         self.parser.add_argument("--min_depth",
                                  type=float,
                                  help="minimum depth",

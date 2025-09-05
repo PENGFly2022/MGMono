@@ -5,10 +5,8 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath
 import math
 import torch.cuda
-import sys
-sys.path.append('/home/lsh/桌面/mg-mono/segment-anything-2-main')  # 添加根目录路径
-# from hrseg.hrseg_model import create_hrnet
-from sam2.modeling.c_modell import create_segment_anything_model
+
+from hrseg.hrseg_model import create_hrnet
 from node.dwconv import *
 from node.CONV import *
 from node.MLP import *
@@ -16,7 +14,17 @@ from node.AFNO import *
 from node.patch import *
 from node.pool import *
 
+# gf
+import logging
+from functools import partial
+from collections import OrderedDict
+from copy import Error, deepcopy
+from re import S
+from numpy.lib.arraypad import pad
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import torch.fft
+from torch.nn.modules.container import Sequential
 
 
 # gf
@@ -35,6 +43,7 @@ class AFNO2D(nn.Module):
         self.hard_thresholding_fraction = hard_thresholding_fraction
         self.hidden_size_factor = hidden_size_factor
         self.scale = 0.02
+        # 下面四个量是用来声明可学习的权重，2代表实部和虚部，w * x + b的方式来线性组合傅里叶模态下的值
         self.w1 = nn.Parameter(
             self.scale * torch.randn(2, self.num_blocks, self.block_size, self.block_size * self.hidden_size_factor))
         self.b1 = nn.Parameter(self.scale * torch.randn(2, self.num_blocks, self.block_size * self.hidden_size_factor))
@@ -43,18 +52,27 @@ class AFNO2D(nn.Module):
         self.b2 = nn.Parameter(self.scale * torch.randn(2, self.num_blocks, self.block_size))
 
     def forward(self, x, spatial_size=None):
+        # B, N, C = x.shape
 
+        # x = x.reshape(B, C, H, W)
         bias = x
         dtype = x.dtype
         x = x.float()
-
+        # if spatial_size == None:
+        #     H = W = int(math.sqrt(N))
+        # else:
+        #     H, W = spatial_size
 
         B, C, H, W = x.shape
         N = H * W
+        # 从这开始，输入的x变成了[batchsize, height, width, channel]的数据维度
         x = x.reshape(B, H, W, C)
 
+        # x = torch.fft.rfft2(x, dim=(2, 3), norm='ortho')
         x = torch.fft.rfft2(x, dim=(1, 2), norm="ortho")  # 对height和width做2维的FFT变换
+        # print(x.size(),"rfft2后形状")
         x = x.reshape(B, x.shape[1], x.shape[2], self.num_blocks, self.block_size)
+        # 0初始化线性组合后的结果，后面可以看出0初始化只需要部分赋值即可实现截断
         o1_real = torch.zeros([B, x.shape[1], x.shape[2], self.num_blocks, self.block_size * self.hidden_size_factor],
                               device=x.device)
         o1_imag = torch.zeros([B, x.shape[1], x.shape[2], self.num_blocks, self.block_size * self.hidden_size_factor],
@@ -64,6 +82,7 @@ class AFNO2D(nn.Module):
 
         total_modes = N // 2 + 1
         kept_modes = int(total_modes * self.hard_thresholding_fraction)
+        # 由于是0初始化，所以第三个维度的0:kept_modes被赋了值，kept_modes:-1就被截断了
         o1_real[:, :, :kept_modes] = F.relu(
             torch.einsum('...bi,bio->...bo', x[:, :, :kept_modes].real, self.w1[0]) - \
             torch.einsum('...bi,bio->...bo', x[:, :, :kept_modes].imag, self.w1[1]) + \
@@ -114,7 +133,11 @@ class feature_extractor(nn.Module):
         # 定义1D卷积层
         self.conv1d = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
-
+        # 定义切块
+        self.patch_embed = PatchEmbed(
+            H=H, W=W, patch_size=patch_size, in_chans=in_channels, embed_dim=embed_dim)  # 切块
+        num_patches = self.patch_embed.num_patches  # 块数
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))  # 位置编码
 
         # 定义多个深度可分离卷积
         dw_block = []
@@ -280,37 +303,45 @@ class ChannelSpatialAttention(nn.Module):
 
 class MGMono(nn.Module):
     """
-    NG-Mono
+    MG-Mono
     """
 
-    def __init__(self, in_chans=3, model='MG-Mono', height=192, width=640, patch_size=4, drop_rate=0.,
-                 global_block=[1, 1, 1], uniform_drop=False,
-                 drop_path_rate=0.2, options = None,
+    def __init__(self, in_chans=3, model='MGMono', height=192, width=640, patch_size=4, drop_rate=0.,
+                 global_block=[1, 1, 1], gf_depth=12, uniform_drop=False,
+                 drop_path_rate=0.2, options = None,layer_scale_init_value=1e-6, expan_ratio=6,
                  heads=[8, 8, 8], use_pos_embd_xca=[True, False, False], **kwargs):
 
         super().__init__()
         self.models = {}
         self.opt = options
         # self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
-        self.models["seg"] = create_segment_anything_model().cuda()
+        self.models["seg"] = create_hrnet().cuda()
         self.Spatial = SpatialAttention(kernel_size=7)
-        self.conv = nn.Conv2d(in_channels=96, out_channels=48, kernel_size=1)
-        self.conv1 = nn.Conv2d(in_channels=192, out_channels=96, kernel_size=1)
-        self.conv2 = nn.Conv2d(in_channels=384, out_channels=192, kernel_size=1)
-
         # self.channelSpatialAttention = ChannelSpatialAttention(channel=,kernel_size=7,reduction=16)
         # seg_map, seg_feature = self.models["seg"](inputs["color_aug", 0, 0])
 
+        if model == 'MGMono':
+            # self.num_ch_enc = np.array([48, 80, 128])
+            self.num_ch_enc = np.array([ 48, 96, 192])
+            self.depth = [4, 4, 10]
+            # self.dims = [48, 80, 128]
+            self.dims = [48, 96, 192]
+            if height == 192 and width == 640:
+                self.dilation = [[1, 1, 1], [1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1]]
+            elif height == 320 and width == 1024:
+                self.dilation = [[1, 2, 5], [1, 2, 5], [1, 2, 5, 1, 2, 5, 2, 4, 10]]
+        # elif model == 'MGMono-tiny':
 
 
 
-        self.downsample_layers = nn.ModuleList()
+
+
+        self.downsample_layers = nn.ModuleList()  # stem and 3 intermediate downsampling conv layers
         stem1 = nn.Sequential(
             Conv(in_chans, self.dims[0], kSize=3, stride=2, padding=1, bn_act=True),
             Conv(self.dims[0], self.dims[0], kSize=3, stride=1, padding=1, bn_act=True),
             Conv(self.dims[0], self.dims[0], kSize=3, stride=1, padding=1, bn_act=True),
         )
-
 
         self.stem2 = nn.Sequential(
             Conv(self.dims[0] + 3, self.dims[0], kSize=3, stride=2, padding=1, bn_act=False),
@@ -328,23 +359,20 @@ class MGMono(nn.Module):
             )
             self.downsample_layers.append(downsample_layer)
 
-
+        if uniform_drop:
+            print('using uniform droppath with expect rate', drop_path_rate)
+            dpr = [drop_path_rate for _ in range(gf_depth)]  # stochastic depth decay rule
+        else:
+            print('using linear droppath with expect rate', drop_path_rate * 0.5)
+            dpr = [x.item() for x in torch.linspace(0, drop_path_rate, gf_depth)]  # stochastic depth decay rule
         cur = 0
-        if model == 'MG-Mono':
-            in_cha = [48, 96, 192]
-            h_size = [48, 24, 12]
-            w_size = [160, 80, 40]
-            dw_nums = [3, 5, 9]
-            afno_nums = [3, 5, 9]
 
-        elif model == 'MG-Mono-tiny':
-            in_cha = [48, 96, 192]
-            h_size = [48, 24, 12]
-            w_size = [160, 80, 40]
-            dw_nums = [2, 4, 6]
-            afno_nums = [2, 3, 6]
-
-
+        # in_cha = [48, 80, 128]
+        in_cha = [48, 96, 192]
+        h_size = [48, 24, 12]
+        w_size = [160, 80, 40]
+        dw_nums = [3,5,9]
+        afno_nums = [3,5,9]
 
         channelSpatialAtt = []
         for i in range(3):
@@ -378,7 +406,6 @@ class MGMono(nn.Module):
         # -----------------------------------------------------------------
 
         self.apply(self._init_weights)
-        self.CONV = nn.Conv2d(48, 24, kernel_size=3,padding=1)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -393,48 +420,32 @@ class MGMono(nn.Module):
             nn.init.constant_(m.bias, 0)
 
     def forward_features(self, x):
-
         features = []
-        seg_a = [None] * 3
-        seg_feature = self.models["seg"](x)
-        # print(self.conv(seg_feature[0]).shape)
-        seg_a[0] =self.conv(seg_feature[0])
-        seg_a[1] =self.conv1(seg_feature[1])
-        seg_a[2] =self.conv2(seg_feature[2])
-
+        seg_map, seg_feature = self.models["seg"](x)
 
         x = (x - 0.45) / 0.225
 
         # print("一阶段")
         x_down = []
 
-
         for i in range(4):
             x_down.append(self.input_downsample[i](x))
 
         tmp_x = []
         x = self.downsample_layers[0](x)
-        features.append(x)    #将第一阶段的特征加入features
-
-        # x =
-
         x = self.stem2(torch.cat((x, x_down[0]), dim=1))
 
-
         tmp_x.append(x)
-
         x = self.three_extractor[0](x) # 输入先送入三分支
         x = self.sk_fusion[0](x) # 三分支的输出送入 sk
 
         attention_M = []
         tmp_x.append(x)
-        features.append(x)    #将第一阶段的特征加入features
-
-        # features.append(x)
+        features.append(x)
         for i in range(0,3):
             # attention_map = self.Spatial(seg_feature[i])
-            attention_map = self.channelSpatialAttention[i](seg_a[i])
-            attention_M.append(attention_map*seg_a[i])
+            attention_map = self.channelSpatialAttention[i](seg_feature[i])
+            attention_M.append(attention_map*seg_feature[i])
             # print(attention_M[i].shape)
 
 
@@ -453,19 +464,15 @@ class MGMono(nn.Module):
             tmp_x.append(x)
 
             features.append(x)
-        # print(features[0].shape, 'features')
-        # print(features[1].shape, 'features')
-        # print(features[2].shape, 'features')
-        # print(features[3].shape, 'features')
+            print(features[0].shape, 'features')
+            print(features[1].shape, 'features')
 
 
-        return features, attention_M
-
+        return features , attention_M
 
         # return features
 
     def forward(self, x):
         x = self.forward_features(x)
-        # print(len(x))
 
         return x
